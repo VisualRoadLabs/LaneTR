@@ -1,0 +1,26 @@
+# Makefile para compilar el evaluador oficial de CULane (SCNN) con OpenCV 4.
+# Parche del Makefile original: añade includes/libs de OpenCV vía `pkg-config opencv4`
+# (el original asumía OpenCV 2/3 y no pasaba el include path, por lo que no compila con
+# libopencv-dev moderno). El código fuente C++ no se modifica.
+PROJECT_NAME := evaluate
+CXX ?= g++
+
+OPENCV_CFLAGS := $(shell pkg-config --cflags opencv4)
+OPENCV_LIBS := $(shell pkg-config --libs opencv4)
+
+CXXFLAGS := -std=c++11 -fopenmp -O2 -Iinclude $(OPENCV_CFLAGS)
+LDFLAGS := -fopenmp $(OPENCV_LIBS)
+
+SRCS := $(wildcard src/*.cpp)
+OBJS := $(SRCS:.cpp=.o)
+
+all: $(PROJECT_NAME)
+
+$(PROJECT_NAME): $(OBJS)
+	$(CXX) -o $@ $^ $(LDFLAGS)
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+clean:
+	rm -f $(OBJS) $(PROJECT_NAME)
