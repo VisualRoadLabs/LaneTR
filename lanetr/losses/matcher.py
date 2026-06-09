@@ -72,6 +72,37 @@ class HungarianMatcher:
                 torch.as_tensor(g, dtype=torch.long, device=dev))
 
     @torch.no_grad()
+    def match_one_to_many(self, pred, tgt, k: int = 4):
+        """Asignación UNO-A-MUCHOS (para capas auxiliares tempranas, estilo O2SFormer).
+
+        Cada carril GT recibe sus `k` queries de menor coste; cada query se asigna como mucho
+        a un GT (al de menor coste si fuera candidata de varios). Devuelve (query_idx, gt_idx),
+        donde cada GT puede aparecer hasta `k` veces.
+        """
+        G = tgt["xs"].shape[0]
+        dev = pred["conf"].device
+        if G == 0:
+            empty = torch.empty(0, dtype=torch.long, device=dev)
+            return empty, empty
+        cost = self.cost_components(pred, tgt)["total"]   # (NQ, G)
+        NQ = cost.shape[0]
+        topk = min(k, NQ)
+        cand = torch.zeros(NQ, G, dtype=torch.bool, device=dev)
+        for g in range(G):
+            idx = torch.topk(cost[:, g], topk, largest=False).indices
+            cand[idx, g] = True
+        q_list, g_list = [], []
+        for q in range(NQ):
+            gs = torch.where(cand[q])[0]
+            if len(gs) == 0:
+                continue
+            best_g = int(gs[cost[q, gs].argmin()])
+            q_list.append(q)
+            g_list.append(best_g)
+        return (torch.tensor(q_list, dtype=torch.long, device=dev),
+                torch.tensor(g_list, dtype=torch.long, device=dev))
+
+    @torch.no_grad()
     def match(self, pred, targets):
         """Empareja un batch.
         `pred`: dict con tensores (B, NQ, ...). `targets`: lista de B dicts (cada uno con

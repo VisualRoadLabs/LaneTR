@@ -37,6 +37,11 @@ class MLP(nn.Module):
         return x
 
 
+def _inverse_sigmoid(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+    x = x.clamp(min=eps, max=1 - eps)
+    return torch.log(x / (1 - x))
+
+
 class LaneHead(nn.Module):
     def __init__(self, d_model: int = 256, num_rows: int = 144, residual_xs: bool = False):
         super().__init__()
@@ -47,22 +52,32 @@ class LaneHead(nn.Module):
         self.ext = MLP(d_model, d_model, 2)   # (start_y, length)
         self.theta = nn.Linear(d_model, 1)
         if residual_xs:
-            # delta≈0 al inicio -> xs ≈ prior (las anclas) hasta que el modelo aprenda
-            nn.init.zeros_(self.xs.layers[-1].weight)
-            nn.init.zeros_(self.xs.layers[-1].bias)
+            # delta≈0 al inicio -> xs y extensión ≈ las anclas hasta que el modelo aprenda
+            for head in (self.xs, self.ext):
+                nn.init.zeros_(head.layers[-1].weight)
+                nn.init.zeros_(head.layers[-1].bias)
 
-    def forward(self, hs: torch.Tensor, prior_xs: torch.Tensor | None = None) -> dict:
+    def forward(self, hs: torch.Tensor, prior_xs: torch.Tensor | None = None,
+                prior_ext: torch.Tensor | None = None) -> dict:
         """hs: (L, B, NQ, D) -> dict de tensores (L, B, NQ, ...).
 
-        Si `prior_xs` (NQ, R) y `residual_xs`, las xs se predicen como prior + delta (sin
-        sigmoid, pueden salir de [0,1] para carriles fuera de pantalla). Si no, xs = sigmoid.
+        Con anclas (`residual_xs`): xs = prior_xs + delta (puede salir de [0,1] para carriles
+        fuera de pantalla); extensión = sigmoid(logit(prior_ext) + delta) (en [0,1], parte del
+        prior). Sin anclas: xs = sigmoid(delta), extensión = sigmoid(delta).
         """
-        delta = self.xs(hs)
+        delta_xs = self.xs(hs)
         if self.residual_xs and prior_xs is not None:
-            xs = prior_xs.view(1, 1, *prior_xs.shape) + delta   # (L,B,NQ,R)
+            xs = prior_xs.view(1, 1, *prior_xs.shape) + delta_xs   # (L,B,NQ,R)
         else:
-            xs = delta.sigmoid()
-        ext = self.ext(hs).sigmoid()
+            xs = delta_xs.sigmoid()
+
+        ext_delta = self.ext(hs)
+        if self.residual_xs and prior_ext is not None:
+            base = _inverse_sigmoid(prior_ext).view(1, 1, *prior_ext.shape)  # (1,1,NQ,2)
+            ext = (base + ext_delta).sigmoid()
+        else:
+            ext = ext_delta.sigmoid()
+
         return {
             "conf": self.conf(hs).squeeze(-1),        # (L,B,NQ) logits
             "xs": xs,                                 # (L,B,NQ,R)

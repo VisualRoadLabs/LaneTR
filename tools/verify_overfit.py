@@ -54,9 +54,11 @@ ROW_YS = TE.make_row_ys(IMG_H, R)
 # Configurable por variables de entorno:
 #   OVERFIT_ANCHORS=1  -> usa prior posicional (Paso 5.1)
 #   OVERFIT_DYNAMIC=1  -> usa matching húngaro DINÁMICO (sin la muleta de asignación fija)
+#   OVERFIT_DEFORM=1   -> usa atención deformable (Paso 5.3)
 USE_ANCHORS = os.environ.get("OVERFIT_ANCHORS", "0") == "1"
 DYNAMIC = os.environ.get("OVERFIT_DYNAMIC", "0") == "1"
-OUT_NAME = "overfit_anchors.png" if (USE_ANCHORS or DYNAMIC) else "overfit.png"
+USE_DEFORM = os.environ.get("OVERFIT_DEFORM", "0") == "1"
+OUT_NAME = "overfit_anchors.png" if (USE_ANCHORS or DYNAMIC or USE_DEFORM) else "overfit.png"
 
 
 class FixedMatcher:
@@ -101,7 +103,8 @@ def draw(ax, rgb, gt_targets, pred_lanes, title):
 def main() -> int:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     mode = (f"anclas={'sí' if USE_ANCHORS else 'no'}, "
-            f"matching={'DINÁMICO' if DYNAMIC else 'fijo'}")
+            f"matching={'DINÁMICO' if DYNAMIC else 'fijo'}, "
+            f"deformable={'sí' if USE_DEFORM else 'no'}")
     print("=" * 70)
     print(f"SOBREAJUSTE A UN BATCH — device={device}, DLA-34  [{mode}]")
     print("=" * 70)
@@ -120,7 +123,7 @@ def main() -> int:
     print(f"Imágenes: {picks}  (carriles: {[sum(s['existence']) for s in samples]})")
 
     model = LaneTR("dla34", pretrained=True, num_queries=12, num_layers=6, num_rows=R,
-                   use_anchors=USE_ANCHORS).to(device)
+                   use_anchors=USE_ANCHORS, deformable=USE_DEFORM).to(device)
     # Para el sobreajuste de demostración: congelar el backbone (BN fijo, sin desajuste
     # train/eval con batch pequeño) y quitar el dropout (memorización limpia).
     for p in model.backbone.parameters():

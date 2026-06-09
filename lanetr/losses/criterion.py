@@ -53,7 +53,7 @@ class LaneCriterion(nn.Module):
     def __init__(self, matcher: HungarianMatcher | None = None, w_cls=2.0, w_iou=2.0,
                  w_xy=0.2, w_ext=0.5, w_theta=0.0, w_smooth=0.0,
                  lane_width=LANE_WIDTH, img_w=IMG_W, img_h=IMG_H, aux_layers=True,
-                 focal_alpha=0.25, focal_gamma=2.0):
+                 focal_alpha=0.25, focal_gamma=2.0, aux_one_to_many=False, o2m_k=4):
         super().__init__()
         self.matcher = matcher or HungarianMatcher(w_cls=w_cls, w_iou=w_iou, w_ext=w_ext,
                                                    lane_width=lane_width, img_w=img_w, img_h=img_h)
@@ -62,11 +62,13 @@ class LaneCriterion(nn.Module):
         self.lane_width, self.img_w, self.img_h = lane_width, img_w, img_h
         self.aux_layers = aux_layers
         self.focal_alpha, self.focal_gamma = focal_alpha, focal_gamma
+        # asignación auxiliar uno-a-muchos en capas tempranas (one-to-one en la última)
+        self.aux_one_to_many = aux_one_to_many
+        self.o2m_k = o2m_k
 
-    def _layer_loss(self, pred_l, targets) -> dict:
+    def _layer_loss(self, pred_l, targets, matches) -> dict:
         B, NQ = pred_l["conf"].shape
         device = pred_l["conf"].device
-        matches = self.matcher.match(pred_l, targets)
 
         labels = torch.zeros(B, NQ, device=device)
         z = torch.zeros((), device=device)
@@ -105,14 +107,26 @@ class LaneCriterion(nn.Module):
             out["smooth"] = self.w_smooth * sm_l / n
         return out
 
+    def _match_layer(self, pred_l, targets, one_to_many: bool):
+        """Calcula el emparejamiento de una capa (uno-a-muchos o uno-a-uno)."""
+        if one_to_many and hasattr(self.matcher, "match_one_to_many"):
+            B = pred_l["conf"].shape[0]
+            return [self.matcher.match_one_to_many({k: v[b] for k, v in pred_l.items()},
+                                                   targets[b], self.o2m_k) for b in range(B)]
+        return self.matcher.match(pred_l, targets)
+
     def forward(self, pred, targets) -> dict:
         """`pred`: dict de tensores (L,B,NQ,...). `targets`: lista de B dicts (tensores torch)."""
         L = pred["conf"].shape[0]
-        layers = range(L) if self.aux_layers else [L - 1]
+        last = L - 1
+        layers = range(L) if self.aux_layers else [last]
         totals: dict[str, torch.Tensor] = {}
         for l in layers:
             pred_l = {k: v[l] for k, v in pred.items()}
-            for k, v in self._layer_loss(pred_l, targets).items():
+            # uno-a-muchos en capas tempranas; uno-a-uno (sin NMS) en la última
+            one_to_many = self.aux_one_to_many and (l != last)
+            matches = self._match_layer(pred_l, targets, one_to_many)
+            for k, v in self._layer_loss(pred_l, targets, matches).items():
                 totals[k] = totals.get(k, 0.0) + v
         totals["total"] = sum(totals.values())
         return totals

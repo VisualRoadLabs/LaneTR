@@ -20,8 +20,9 @@ NQ, D, R, B = 12, 256, 144, 2
 def test_anchor_init_is_spread():
     a = LaneAnchors(NQ, D)
     sx = a.anchors[:, 0]
-    assert torch.allclose(sx[0], torch.tensor(0.1), atol=1e-4)
-    assert torch.allclose(sx[-1], torch.tensor(0.9), atol=1e-4)
+    # el abanico llega a los laterales (bordes) pero SIN salirse de la imagen [0,1]
+    assert sx.min() >= 0.0 and sx.max() <= 1.0, f"el abanico se sale de la imagen: [{sx[0]:.2f},{sx[-1]:.2f}]"
+    assert sx[0] < 0.05 and sx[-1] > 0.95, "el abanico no llega a los laterales"
     assert (sx.diff() > 0).all(), "los start_x deben estar repartidos crecientes"
 
 
@@ -66,6 +67,34 @@ def test_predictions_are_spread_with_anchors():
         xs = model(torch.randn(1, 3, 320, 800))["xs"][-1, 0]  # (NQ,R)
     bottom = xs[:, -1]
     assert bottom.std() > 0.1, "las predicciones no están repartidas (anclas sin efecto)"
+
+
+def test_ext_prior_values():
+    """El prior de extensión nace 'abajo + largo' (start_y≈0.98, length≈0.9)."""
+    a = LaneAnchors(NQ, D)
+    ext = a.ext_prior()
+    assert ext.shape == (NQ, 2)
+    assert torch.allclose(ext[:, 0], torch.full((NQ,), 0.98), atol=1e-3)
+    assert torch.allclose(ext[:, 1], torch.full((NQ,), 0.9), atol=1e-3)
+
+
+def test_initial_extent_equals_prior():
+    """Con delta≈0, la extensión predicha ≈ el prior del ancla (abanico llega a toda la imagen)."""
+    model = LaneTR(pretrained=False, num_queries=NQ, num_layers=3, num_rows=R, use_anchors=True).eval()
+    with torch.no_grad():
+        pred = model(torch.randn(1, 3, 320, 800))
+    assert torch.allclose(pred["start_y"][-1, 0], torch.full((NQ,), 0.98), atol=1e-3)
+    assert torch.allclose(pred["length"][-1, 0], torch.full((NQ,), 0.9), atol=1e-3)
+
+
+def test_anchor_lanes_span_image():
+    """Los carriles iniciales (con extensión anclada) cubren casi toda la altura."""
+    from lanetr.models import decode_lanes
+    model = LaneTR(pretrained=False, num_queries=NQ, num_layers=3, num_rows=R, use_anchors=True).eval()
+    with torch.no_grad():
+        lanes = decode_lanes(model(torch.randn(1, 3, 320, 800)), conf_thresh=None, num_rows=R)[0]
+    ys = [p for lane in lanes for p in lane["points"][:, 1]]
+    assert min(ys) < 40 and max(ys) > 280, "los carriles no llegan a (casi) toda la imagen (0..319)"
 
 
 def test_anchor_grad_flows():
