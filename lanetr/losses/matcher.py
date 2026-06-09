@@ -65,7 +65,8 @@ class HungarianMatcher:
         if G == 0:
             empty = torch.empty(0, dtype=torch.long)
             return empty, empty
-        cost = self.cost_components(pred, tgt)["total"].detach().cpu().numpy()
+        # .float(): numpy no soporta bfloat16 (relevante bajo autocast bf16 en el A6000)
+        cost = self.cost_components(pred, tgt)["total"].detach().float().cpu().numpy()
         q, g = linear_sum_assignment(cost)
         dev = pred["conf"].device
         return (torch.as_tensor(q, dtype=torch.long, device=dev),
