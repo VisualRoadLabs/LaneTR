@@ -51,6 +51,8 @@ def test_smoke_training_runs():
     assert out["iters"] >= 5
     assert math.isfinite(out["last"]["total"]), out["last"]
     assert out["last"]["total"] > 0
+    # el hook de evaluación (con EMA) corre y da un F1 finito en [0,1]
+    assert "eval_f1" in out and 0.0 <= out["eval_f1"] <= 1.0
 
 
 def _run_all() -> int:

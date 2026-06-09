@@ -35,6 +35,7 @@ from lanetr import paths
 from lanetr.config import load_config
 from lanetr.data.culane_dataset import build_dataloader
 from lanetr.losses import LaneCriterion, prepare_targets
+from lanetr.metrics import evaluate as ev
 from lanetr.models import LaneTR
 from lanetr.training import ModelEMA, build_optimizer, build_scheduler, freeze_batchnorm
 
@@ -101,6 +102,8 @@ def train(cfg, smoke=False):
 
     it = 0
     last = {}
+    best_f1 = -1.0
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
     for epoch in range(epochs):
         t0 = time.time()
         for batch in dl:
@@ -126,18 +129,41 @@ def train(cfg, smoke=False):
                       f"cls {last['cls']:.3f}  iou {last['iou']:.3f}  ext {last['ext']:.3f}")
             if smoke and it >= 5:
                 print("  [smoke] 5 iteraciones OK")
-                return {"iters": it, "last": last}
+                # validar el hook de evaluación (con EMA) sobre 4 imágenes
+                eval_model = ema.ema if ema is not None else model
+                res = ev.evaluate_list(eval_model, "val_gt.txt", device,
+                                       conf_thresh=cfg["train"]["eval_conf_thresh"],
+                                       batch_size=4, num_workers=0, img_w=cfg["data"]["img_w"],
+                                       img_h=cfg["data"]["img_h"], num_rows=cfg["data"]["num_rows"],
+                                       max_images=4)
+                print(f"  [smoke] eval F1={res['F1']:.4f} (4 imágenes)")
+                return {"iters": it, "last": last, "eval_f1": res["F1"]}
 
         # checkpoint por época
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
         ckpt = {"epoch": epoch, "model": model.state_dict(), "optimizer": optimizer.state_dict(),
                 "config": cfg}
         if ema is not None:
             ckpt["ema"] = ema.state_dict()
-        torch.save(ckpt, ckpt_dir / f"epoch_{epoch:03d}.pth")
-        print(f"  época {epoch} hecha en {time.time()-t0:.1f}s  (checkpoint guardado)")
+        torch.save(ckpt, ckpt_dir / "last.pth")
+        print(f"  época {epoch} hecha en {time.time()-t0:.1f}s")
 
-    return {"iters": it, "last": last}
+        # evaluación F1 (con los pesos EMA si los hay) cada `eval_interval` épocas + la última
+        do_eval = ((epoch + 1) % cfg["train"]["eval_interval"] == 0) or (epoch == epochs - 1)
+        if do_eval:
+            eval_model = ema.ema if ema is not None else model
+            res = ev.evaluate_list(
+                eval_model, "val_gt.txt", device, conf_thresh=cfg["train"]["eval_conf_thresh"],
+                batch_size=cfg["train"]["eval_batch_size"], num_workers=0,
+                img_w=cfg["data"]["img_w"], img_h=cfg["data"]["img_h"],
+                num_rows=cfg["data"]["num_rows"], max_images=cfg["train"]["eval_max_images"])
+            print(f"  [eval] época {epoch}: F1={res['F1']:.4f}  P={res['Precision']:.4f}  "
+                  f"R={res['Recall']:.4f}  (TP={res['TP']} FP={res['FP']} FN={res['FN']})")
+            if res["F1"] > best_f1:
+                best_f1 = res["F1"]
+                torch.save(ckpt, ckpt_dir / "best.pth")
+                print(f"  ** nuevo mejor F1={best_f1:.4f} -> best.pth")
+
+    return {"iters": it, "last": last, "best_f1": best_f1}
 
 
 def _parse_overrides(pairs):

@@ -35,6 +35,7 @@ DEFAULT: dict = {
         "epochs": 15, "grad_clip": 0.1, "amp": True, "channels_last": True,
         "freeze_bn": True, "eval_interval": 3, "log_interval": 50,
         "ckpt_dir": "outputs/checkpoints", "seed": 0,
+        "eval_conf_thresh": 0.5, "eval_max_images": None, "eval_batch_size": 16,
     },
 }
 
