@@ -20,6 +20,7 @@ DEFAULT: dict = {
     "data": {
         "img_w": 800, "img_h": 320, "num_rows": 144,
         "batch_size": 32, "num_workers": 8, "augment": True,
+        "train_split": "train",   # "train"=filtrado (coche parado); "train_full"=88.880 (ablation filtro)
     },
     "optim": {
         "lr": 2.0e-4, "weight_decay": 1.0e-4,
@@ -29,6 +30,7 @@ DEFAULT: dict = {
         "w_cls": 2.0, "w_iou": 4.0, "w_xy": 0.2, "w_ext": 0.5,
         "focal_alpha": 0.25, "focal_gamma": 2.0,
         "aux_one_to_many": False, "o2m_k": 4, "w_smooth": 0.0,
+        "geo_metric": "laneiou",  # "laneiou" (tesis) | "lineiou" | "distance" (ablation)
     },
     "ema": {"enabled": True, "decay": 0.9999, "tau": 2000.0},
     "train": {
@@ -36,6 +38,7 @@ DEFAULT: dict = {
         "freeze_bn": True, "eval_interval": 3, "log_interval": 50,
         "ckpt_dir": "outputs/checkpoints", "seed": 0,
         "eval_conf_thresh": 0.5, "eval_max_images": None, "eval_batch_size": 16,
+        "final_eval": True,   # al acabar: calibra umbral en val + eval test global y por categoría -> results.json
     },
 }
 

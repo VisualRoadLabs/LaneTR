@@ -18,7 +18,7 @@ from __future__ import annotations
 import torch
 from scipy.optimize import linear_sum_assignment
 
-from .lane_iou import IMG_H, IMG_W, LANE_WIDTH, lane_iou_pairwise
+from .lane_iou import IMG_H, IMG_W, LANE_WIDTH, lane_iou_pairwise, line_iou_pairwise
 
 
 def focal_cost(conf_logits, alpha=0.25, gamma=2.0, eps=1e-12):
@@ -39,18 +39,24 @@ def l1_xs_cost(pred_xs, gt_xs, gt_valid):
 
 class HungarianMatcher:
     def __init__(self, w_cls=2.0, w_iou=2.0, w_xy=0.0, w_ext=0.5,
-                 lane_width=LANE_WIDTH, img_w=IMG_W, img_h=IMG_H):
+                 lane_width=LANE_WIDTH, img_w=IMG_W, img_h=IMG_H, geo_metric="laneiou"):
         self.w_cls, self.w_iou, self.w_xy, self.w_ext = w_cls, w_iou, w_xy, w_ext
         self.lane_width, self.img_w, self.img_h = lane_width, img_w, img_h
+        # término geométrico del coste: "laneiou" (tesis), "lineiou" (ablation) o "distance" (L1)
+        self.geo_metric = geo_metric
 
     def cost_components(self, pred, tgt) -> dict:
         """Devuelve las matrices de coste (NQ×G) por componente y el total."""
         NQ = pred["conf"].shape[0]
         G = tgt["xs"].shape[0]
         c_cls = focal_cost(pred["conf"])[:, None].expand(NQ, G)
-        iou = lane_iou_pairwise(pred["xs"], tgt["xs"], tgt["valid"],
-                                self.lane_width, self.img_w, self.img_h)
-        c_iou = 1.0 - iou
+        if self.geo_metric == "laneiou":
+            c_iou = 1.0 - lane_iou_pairwise(pred["xs"], tgt["xs"], tgt["valid"],
+                                            self.lane_width, self.img_w, self.img_h)
+        elif self.geo_metric == "lineiou":
+            c_iou = 1.0 - line_iou_pairwise(pred["xs"], tgt["xs"], tgt["valid"])
+        else:  # "distance" / "l1": distancia simple (ablation de la tesis)
+            c_iou = l1_xs_cost(pred["xs"], tgt["xs"], tgt["valid"])
         c_xy = l1_xs_cost(pred["xs"], tgt["xs"], tgt["valid"])
         c_ext = ((pred["start_y"][:, None] - tgt["start_y"][None, :]).abs()
                  + (pred["length"][:, None] - tgt["length"][None, :]).abs())

@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .lane_iou import IMG_H, IMG_W, LANE_WIDTH, lane_iou_loss
+from .lane_iou import IMG_H, IMG_W, LANE_WIDTH, lane_iou_loss, line_iou_loss
 from .matcher import HungarianMatcher
 
 
@@ -53,10 +53,14 @@ class LaneCriterion(nn.Module):
     def __init__(self, matcher: HungarianMatcher | None = None, w_cls=2.0, w_iou=2.0,
                  w_xy=0.2, w_ext=0.5, w_theta=0.0, w_smooth=0.0,
                  lane_width=LANE_WIDTH, img_w=IMG_W, img_h=IMG_H, aux_layers=True,
-                 focal_alpha=0.25, focal_gamma=2.0, aux_one_to_many=False, o2m_k=4):
+                 focal_alpha=0.25, focal_gamma=2.0, aux_one_to_many=False, o2m_k=4,
+                 geo_metric="laneiou"):
         super().__init__()
+        # término geométrico: "laneiou" (tesis), "lineiou" (ablation), "distance" (L1 simple)
+        self.geo_metric = geo_metric
         self.matcher = matcher or HungarianMatcher(w_cls=w_cls, w_iou=w_iou, w_ext=w_ext,
-                                                   lane_width=lane_width, img_w=img_w, img_h=img_h)
+                                                   lane_width=lane_width, img_w=img_w, img_h=img_h,
+                                                   geo_metric=geo_metric)
         self.w_cls, self.w_iou, self.w_xy = w_cls, w_iou, w_xy
         self.w_ext, self.w_theta, self.w_smooth = w_ext, w_theta, w_smooth
         self.lane_width, self.img_w, self.img_h = lane_width, img_w, img_h
@@ -81,10 +85,16 @@ class LaneCriterion(nn.Module):
             num += len(q)
             pxs, gxs = pred_l["xs"][b][q], targets[b]["xs"][g]
             gv = targets[b]["valid"][g]
-            iou_l = iou_l + lane_iou_loss(pxs, gxs, gv, self.lane_width, self.img_w,
-                                          self.img_h, reduction="sum")
             d = (pxs - gxs).abs().masked_fill(~gv, 0.0)
-            xy_l = xy_l + (d.sum(-1) / gv.sum(-1).clamp(min=1)).sum()
+            l1_per_lane = (d.sum(-1) / gv.sum(-1).clamp(min=1)).sum()
+            xy_l = xy_l + l1_per_lane
+            if self.geo_metric == "laneiou":
+                iou_l = iou_l + lane_iou_loss(pxs, gxs, gv, self.lane_width, self.img_w,
+                                              self.img_h, reduction="sum")
+            elif self.geo_metric == "lineiou":
+                iou_l = iou_l + line_iou_loss(pxs, gxs, gv, reduction="sum")
+            else:  # "distance": el término geométrico es la distancia L1 (ablation)
+                iou_l = iou_l + l1_per_lane
             ext_l = ext_l + (pred_l["start_y"][b][q] - targets[b]["start_y"][g]).abs().sum()
             ext_l = ext_l + (pred_l["length"][b][q] - targets[b]["length"][g]).abs().sum()
             th_l = th_l + (pred_l["theta"][b][q] - targets[b]["theta"][g]).abs().sum()
