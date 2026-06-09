@@ -47,18 +47,31 @@ def main():
     ap.add_argument("--config", default=str(ROOT / "configs" / "lanetr_culane.yaml"))
     ap.add_argument("--gpus", default="0,1", help="GPUs a usar, p.ej. 0,1")
     ap.add_argument("--only", nargs="*", default=None, help="subconjunto de ablations por nombre")
+    ap.add_argument("--epochs", type=int, default=None, help="train.epochs para TODAS las ablations")
+    ap.add_argument("--set", nargs="*", default=None,
+                    help="overrides globales (clave.anidada=valor) aplicados a todas las ablations")
     ap.add_argument("--dry-run", action="store_true", help="solo imprime los comandos")
     args = ap.parse_args()
 
     gpus = [int(g) for g in args.gpus.split(",") if g.strip() != ""]
     ablations = [(n, o) for n, o in ABLATIONS if (args.only is None or n in args.only)]
+
+    # overrides globales (p.ej. --epochs 15) aplicados a TODAS las ablations
+    global_ov: dict = {}
+    if args.epochs is not None:
+        global_ov["train.epochs"] = args.epochs
+    for kv in (args.set or []):
+        k, v = kv.split("=", 1)
+        global_ov[k] = v
+    (ROOT / "work_dirs").mkdir(parents=True, exist_ok=True)   # crear ANTES de abrir logs
+
     print(f"Ablations ({len(ablations)}): {[n for n, _ in ablations]}")
-    print(f"GPUs: {gpus}  (modelo principal 'main' primero)\n")
+    print(f"GPUs: {gpus}  (modelo principal 'main' primero)  overrides globales: {global_ov or '—'}\n")
 
     if args.dry_run:
         for i, (name, ov) in enumerate(ablations):
             gpu = gpus[i % len(gpus)]
-            cmd = build_cmd(args.config, name, ov)
+            cmd = build_cmd(args.config, name, {**global_ov, **ov})
             print(f"[GPU {gpu}] {' '.join(cmd)}")
         print("\n(dry-run: nada lanzado. Quita --dry-run para entrenar.)")
         return
@@ -69,10 +82,9 @@ def main():
         for gpu in gpus:
             if gpu not in running and queue:
                 name, ov = queue.popleft()
-                cmd = build_cmd(args.config, name, ov)
+                cmd = build_cmd(args.config, name, {**global_ov, **ov})
                 env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu)}
                 logf = open(ROOT / "work_dirs" / f"_runner_{name}.out", "w", encoding="utf-8")
-                (ROOT / "work_dirs").mkdir(exist_ok=True)
                 p = subprocess.Popen(cmd, env=env, stdout=logf, stderr=subprocess.STDOUT)
                 running[gpu] = (name, p, logf)
                 print(f"[GPU {gpu}] lanzado '{name}'  -> work_dirs/_runner_{name}.out")
