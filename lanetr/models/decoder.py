@@ -84,10 +84,13 @@ class LaneDecoder(nn.Module):
             poss.append(pos)
         return torch.cat(srcs, dim=1), torch.cat(poss, dim=1), shapes
 
-    def forward(self, feats, need_attn: bool = False):
+    def forward(self, feats, need_attn: bool = False, query_pos=None):
         b = feats[0].shape[0]
         memory, memory_pos, shapes = self._build_memory(feats)
-        query_pos = self.query_embed.weight.unsqueeze(0).expand(b, -1, -1)  # (b,N,d)
+        if query_pos is None:
+            query_pos = self.query_embed.weight.unsqueeze(0).expand(b, -1, -1)  # (b,N,d)
+        elif query_pos.dim() == 2:
+            query_pos = query_pos.unsqueeze(0).expand(b, -1, -1)  # (NQ,d) -> (b,NQ,d)
         tgt = torch.zeros_like(query_pos)
 
         outs, attns = [], []

@@ -38,20 +38,34 @@ class MLP(nn.Module):
 
 
 class LaneHead(nn.Module):
-    def __init__(self, d_model: int = 256, num_rows: int = 144):
+    def __init__(self, d_model: int = 256, num_rows: int = 144, residual_xs: bool = False):
         super().__init__()
         self.num_rows = num_rows
+        self.residual_xs = residual_xs
         self.conf = nn.Linear(d_model, 1)
         self.xs = MLP(d_model, d_model, num_rows)
         self.ext = MLP(d_model, d_model, 2)   # (start_y, length)
         self.theta = nn.Linear(d_model, 1)
+        if residual_xs:
+            # delta≈0 al inicio -> xs ≈ prior (las anclas) hasta que el modelo aprenda
+            nn.init.zeros_(self.xs.layers[-1].weight)
+            nn.init.zeros_(self.xs.layers[-1].bias)
 
-    def forward(self, hs: torch.Tensor) -> dict:
-        """hs: (L, B, NQ, D) -> dict de tensores (L, B, NQ, ...)."""
+    def forward(self, hs: torch.Tensor, prior_xs: torch.Tensor | None = None) -> dict:
+        """hs: (L, B, NQ, D) -> dict de tensores (L, B, NQ, ...).
+
+        Si `prior_xs` (NQ, R) y `residual_xs`, las xs se predicen como prior + delta (sin
+        sigmoid, pueden salir de [0,1] para carriles fuera de pantalla). Si no, xs = sigmoid.
+        """
+        delta = self.xs(hs)
+        if self.residual_xs and prior_xs is not None:
+            xs = prior_xs.view(1, 1, *prior_xs.shape) + delta   # (L,B,NQ,R)
+        else:
+            xs = delta.sigmoid()
         ext = self.ext(hs).sigmoid()
         return {
             "conf": self.conf(hs).squeeze(-1),        # (L,B,NQ) logits
-            "xs": self.xs(hs).sigmoid(),              # (L,B,NQ,R) en [0,1]
+            "xs": xs,                                 # (L,B,NQ,R)
             "start_y": ext[..., 0],                   # (L,B,NQ) en [0,1]
             "length": ext[..., 1],                    # (L,B,NQ) en [0,1]
             "theta": self.theta(hs).squeeze(-1),      # (L,B,NQ)
