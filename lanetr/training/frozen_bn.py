@@ -35,7 +35,7 @@ def freeze_batchnorm(module: nn.Module) -> nn.Module:
     """Sustituye recursivamente todos los `BatchNorm2d` por `FrozenBatchNorm2d` (copiando
     sus estadísticas). Modifica el módulo in-place y lo devuelve."""
     if isinstance(module, nn.BatchNorm2d):
-        frozen = FrozenBatchNorm2d(module.num_features, module.eps)
+        frozen = FrozenBatchNorm2d(module.num_features, module.eps).to(module.weight.device)
         frozen.weight.data.copy_(module.weight.data)
         frozen.bias.data.copy_(module.bias.data)
         frozen.running_mean.data.copy_(module.running_mean.data)

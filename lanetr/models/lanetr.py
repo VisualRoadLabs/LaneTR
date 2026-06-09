@@ -44,16 +44,23 @@ class LaneTR(nn.Module):
             self.anchors = LaneAnchors(num_queries, d_model)
             self.register_buffer("row_ys", torch.tensor(make_row_ys(img_h, num_rows)))
 
-    def forward(self, images: torch.Tensor) -> dict:
+    def forward(self, images: torch.Tensor, return_attn: bool = False):
         feats = self.fpn(self.backbone(images))
         if self.use_anchors:
             ref = self.anchors.reference_points() if self.deformable else None  # (NQ,2)
-            hs = self.decoder(feats, query_pos=self.anchors.pos_embed(),
-                              reference_points=ref)                            # (L,B,NQ,D)
+            dec = self.decoder(feats, query_pos=self.anchors.pos_embed(),
+                               reference_points=ref, need_attn=return_attn)
             prior = self.anchors.prior_xs(self.row_ys, self.img_h)             # (NQ,R)
-            return self.head(hs, prior_xs=prior, prior_ext=self.anchors.ext_prior())
-        hs = self.decoder(feats)
-        return self.head(hs)
+            if return_attn:
+                hs, attn, shapes = dec
+                pred = self.head(hs, prior_xs=prior, prior_ext=self.anchors.ext_prior())
+                return pred, {"attn": attn, "shapes": shapes}
+            return self.head(dec, prior_xs=prior, prior_ext=self.anchors.ext_prior())
+        dec = self.decoder(feats, need_attn=return_attn)
+        if return_attn:
+            hs, attn, shapes = dec
+            return self.head(hs), {"attn": attn, "shapes": shapes}
+        return self.head(dec)
 
     @torch.no_grad()
     def predict(self, images: torch.Tensor, conf_thresh: float | None = 0.5,

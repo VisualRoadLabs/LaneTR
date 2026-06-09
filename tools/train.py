@@ -37,7 +37,10 @@ from lanetr.data.culane_dataset import build_dataloader
 from lanetr.losses import LaneCriterion, prepare_targets
 from lanetr.metrics import evaluate as ev
 from lanetr.models import LaneTR
-from lanetr.training import ModelEMA, build_optimizer, build_scheduler, freeze_batchnorm
+from lanetr.training import (
+    ETA, EpochVisualizer, GPUMonitor, ModelEMA, build_optimizer, build_scheduler,
+    create_work_dir, freeze_batchnorm, get_logger,
+)
 
 
 def build_model(cfg, device):
@@ -93,19 +96,40 @@ def train(cfg, smoke=False):
     cl = cfg["train"]["channels_last"] and device == "cuda"
     clip = cfg["train"]["grad_clip"]
     log_every = cfg["train"]["log_interval"]
-    ckpt_dir = paths.project_root() / cfg["train"]["ckpt_dir"]
+    conf_thr = cfg["train"]["eval_conf_thresh"]
 
-    print(f"device={device} | batch={bs} | epochs={epochs} | iters/epoca={len(dl)} | "
-          f"amp(bf16)={amp} | anclas={cfg['model']['use_anchors']} deformable={cfg['model']['deformable']}")
+    # work_dir + logging + GPU + visualizaciones (solo en entrenamiento real, no en smoke)
+    if not smoke:
+        work = create_work_dir(cfg)
+        train_log = get_logger("lanetr.train", work / "train.log")
+        eval_log = get_logger("lanetr.eval", work / "eval.log")
+        gpu_log = get_logger("lanetr.gpu", work / "gpu.log")
+        viz = EpochVisualizer(device, cfg["data"]["img_w"], cfg["data"]["img_h"],
+                              cfg["data"]["num_rows"], conf_thresh=conf_thr)
+        gpu = GPUMonitor(device)
+        ckpt_dir = work / "checkpoints"
+        log = train_log.info
+        log(f"work_dir: {work}")
+    else:
+        work = None
+        viz = gpu = eval_log = None
+        ckpt_dir = paths.outputs_dir() / "smoke_ckpt"
+        log = print
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    log(f"device={device} | batch={bs} | epochs={epochs} | iters/epoca={len(dl)} | amp(bf16)={amp} | "
+        f"anclas={cfg['model']['use_anchors']} deformable={cfg['model']['deformable']}")
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"params entrenables: {n_params/1e6:.1f}M")
+    log(f"params entrenables: {n_params/1e6:.1f}M")
 
+    eta = ETA(total_iters)
     it = 0
     last = {}
     best_f1 = -1.0
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
     for epoch in range(epochs):
         t0 = time.time()
+        if gpu:
+            gpu.epoch_start()
         for batch in dl:
             images = batch["image"].to(device, non_blocking=True)
             if cl:
@@ -123,10 +147,13 @@ def train(cfg, smoke=False):
                 ema.update(model)
             it += 1
             last = {k: float(v.detach()) for k, v in losses.items()}
+            eta_str = eta.step(it)
             if it % log_every == 0 or (smoke and it <= 3):
+                if gpu:
+                    gpu.sample()
                 lr = optimizer.param_groups[0]["lr"]
-                print(f"  ep {epoch} it {it}  lr {lr:.2e}  total {last['total']:.3f}  "
-                      f"cls {last['cls']:.3f}  iou {last['iou']:.3f}  ext {last['ext']:.3f}")
+                loss_str = "  ".join(f"loss_{k} {v:.4f}" for k, v in last.items())
+                log(f"ep {epoch+1}/{epochs} it {it}/{total_iters}  lr {lr:.6f}  {loss_str}  ETA {eta_str}")
             if smoke and it >= 5:
                 print("  [smoke] 5 iteraciones OK")
                 # validar el hook de evaluación (con EMA) sobre 4 imágenes
@@ -139,31 +166,43 @@ def train(cfg, smoke=False):
                 print(f"  [smoke] eval F1={res['F1']:.4f} (4 imágenes)")
                 return {"iters": it, "last": last, "eval_f1": res["F1"]}
 
-        # checkpoint por época
+        # --- fin de época: checkpoint, GPU, evaluación, visualizaciones ---
         ckpt = {"epoch": epoch, "model": model.state_dict(), "optimizer": optimizer.state_dict(),
                 "config": cfg}
         if ema is not None:
             ckpt["ema"] = ema.state_dict()
         torch.save(ckpt, ckpt_dir / "last.pth")
-        print(f"  época {epoch} hecha en {time.time()-t0:.1f}s")
+        log(f"época {epoch+1}/{epochs} hecha en {time.time()-t0:.1f}s")
 
-        # evaluación F1 (con los pesos EMA si los hay) cada `eval_interval` épocas + la última
+        if gpu is not None:
+            g = gpu.epoch_summary()
+            um = f"{g['util_mean']:.0f}" if g.get("util_mean") is not None else "n/a"
+            ux = f"{g['util_max']:.0f}" if g.get("util_max") is not None else "n/a"
+            gpu_log.info(f"época {epoch+1}: mem_pico {g.get('mem_peak_gb', 0):.2f}GB  "
+                         f"reservada {g.get('mem_reserved_gb', 0):.2f}GB  util media {um}%  máx {ux}%")
+
+        eval_model = ema.ema if ema is not None else model
         do_eval = ((epoch + 1) % cfg["train"]["eval_interval"] == 0) or (epoch == epochs - 1)
         if do_eval:
-            eval_model = ema.ema if ema is not None else model
             res = ev.evaluate_list(
-                eval_model, "val_gt.txt", device, conf_thresh=cfg["train"]["eval_conf_thresh"],
+                eval_model, "val_gt.txt", device, conf_thresh=conf_thr,
                 batch_size=cfg["train"]["eval_batch_size"], num_workers=0,
                 img_w=cfg["data"]["img_w"], img_h=cfg["data"]["img_h"],
                 num_rows=cfg["data"]["num_rows"], max_images=cfg["train"]["eval_max_images"])
-            print(f"  [eval] época {epoch}: F1={res['F1']:.4f}  P={res['Precision']:.4f}  "
-                  f"R={res['Recall']:.4f}  (TP={res['TP']} FP={res['FP']} FN={res['FN']})")
+            msg = (f"época {epoch+1}: F1={res['F1']:.4f}  P={res['Precision']:.4f}  "
+                   f"R={res['Recall']:.4f}  TP={res['TP']} FP={res['FP']} FN={res['FN']}")
+            (eval_log.info if eval_log else print)(msg)
             if res["F1"] > best_f1:
                 best_f1 = res["F1"]
                 torch.save(ckpt, ckpt_dir / "best.pth")
-                print(f"  ** nuevo mejor F1={best_f1:.4f} -> best.pth")
+                log(f"** nuevo mejor F1={best_f1:.4f} -> best.pth")
 
-    return {"iters": it, "last": last, "best_f1": best_f1}
+        if viz is not None:
+            viz.visualize(eval_model, criterion.matcher, epoch, work / "viz")
+            log(f"visualizaciones -> viz/epoch_{epoch:03d}/")
+
+    return {"iters": it, "last": last, "best_f1": best_f1,
+            "work_dir": str(work) if work else None}
 
 
 def _parse_overrides(pairs):
