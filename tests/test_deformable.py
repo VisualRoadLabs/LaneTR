@@ -134,6 +134,72 @@ def test_multiref_attn_visual_path():
     assert sl.shape[-2] == NREF * NPOINTS
 
 
+# --------------------- Paso 7: refinamiento iterativo de referencias --------------------- #
+
+def test_ref_heights_skip_bottom():
+    """ref_heights(3, 0.2, 0.8) reparte 3 alturas en [0.2,0.8] sin tocar el borde de abajo."""
+    a = LaneAnchors(NQ, D)
+    ys = a.ref_heights(3, y_top=0.2, y_bottom=0.8)
+    assert ys.shape == (3,)
+    assert abs(ys[0].item() - 0.2) < 1e-6 and abs(ys[-1].item() - 0.8) < 1e-6
+    assert ys.max().item() <= 0.8 + 1e-6, "no debe haber referencia en el borde inferior"
+    assert a.ref_heights(1).item() == 0.5   # n_ref=1 -> media altura
+
+
+def test_ref_refine_runs_and_grad():
+    """Con ref_refine=True el modelo corre y el gradiente llega al MLP de refinamiento
+    (aunque arranca a cero, dx=0) y a las anclas."""
+    model = LaneTR(pretrained=False, num_queries=NQ, num_layers=3, num_rows=R,
+                   use_anchors=True, deformable=True, n_ref_points=1, ref_refine=True)
+    assert hasattr(model.decoder, "ref_refine_mlp")
+    pred = model(torch.randn(1, 3, 320, 800))
+    assert pred["xs"].shape == (3, 1, NQ, R)
+    pred["xs"].mean().backward()
+    w = model.decoder.ref_refine_mlp.layers[-1].weight
+    assert w.grad is not None and torch.isfinite(w.grad).all()
+    assert model.anchors.anchors.grad is not None
+
+
+def test_ref_refine_moves_references():
+    """Tras perturbar el MLP de refinamiento, las refs de la 2ª capa se MUEVEN respecto a la 1ª
+    (el muestreo deja de ser estático a lo largo de las capas)."""
+    torch.manual_seed(0)
+    model = LaneTR(pretrained=False, num_queries=NQ, num_layers=3, num_rows=R, use_anchors=True,
+                   deformable=True, n_ref_points=3, ref_refine=True,
+                   ref_y_top=0.2, ref_y_bottom=0.8).eval()
+    # con el MLP a cero (init) las refs son estáticas; le metemos pesos no nulos
+    with torch.no_grad():
+        model.decoder.ref_refine_mlp.layers[-1].weight.normal_(0, 0.5)
+        model.decoder.ref_refine_mlp.layers[-1].bias.normal_(0, 0.5)
+        _, info = model(torch.randn(1, 3, 320, 800), return_attn=True)
+    # centro de muestreo (media de las muestras) por capa para la query 0
+    c0 = info["attn"][0][0][0].reshape(-1, 2).mean(0)
+    c1 = info["attn"][1][0][0].reshape(-1, 2).mean(0)
+    assert (c0 - c1).abs().sum().item() > 1e-4, "las referencias deberían moverse entre capas"
+
+
+def test_ref_refine_xs_mode():
+    """Modo 'xs': las refs se derivan del xs de la cabeza (sin MLP de refinamiento). Corre,
+    el gradiente fluye, y las referencias se mueven entre capas (siguen el xs predicho)."""
+    model = LaneTR(pretrained=False, num_queries=NQ, num_layers=3, num_rows=R, use_anchors=True,
+                   deformable=True, n_ref_points=3, ref_refine=True, ref_refine_mode="xs",
+                   ref_y_top=0.15, ref_y_bottom=0.9)
+    assert not hasattr(model.decoder, "ref_refine_mlp")   # modo xs: no hay MLP extra
+    pred = model(torch.randn(1, 3, 320, 800))
+    assert pred["xs"].shape == (3, 1, NQ, R)
+    pred["xs"].mean().backward()
+    assert model.head.xs.layers[0].weight.grad is not None   # el gradiente llega a la cabeza xs
+    # con el delta de la cabeza a cero (init) las refs son estáticas; al darle peso, se mueven
+    model.eval()
+    with torch.no_grad():
+        model.head.xs.layers[-1].weight.normal_(0, 0.3)
+        model.head.xs.layers[-1].bias.normal_(0, 0.3)
+        _, info = model(torch.randn(1, 3, 320, 800), return_attn=True)
+    c0 = info["attn"][0][0][0].reshape(-1, 2).mean(0)
+    c1 = info["attn"][1][0][0].reshape(-1, 2).mean(0)
+    assert (c0 - c1).abs().sum().item() > 1e-5   # las refs se mueven según el xs predicho
+
+
 def _run_all() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

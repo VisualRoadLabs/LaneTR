@@ -51,7 +51,8 @@ def main() -> int:
     torch.manual_seed(0)
 
     model = LaneTR("dla34", pretrained=True, num_queries=12, num_layers=6,
-                   use_anchors=True, deformable=True, n_ref_points=6).eval()
+                   use_anchors=True, deformable=True, n_ref_points=3,
+                   ref_y_top=0.2, ref_y_bottom=0.8).eval()
     n_pts = model.decoder.layers[0].cross_attn.n_points
     n_heads = model.decoder.layers[0].cross_attn.n_heads
     n_ref = model.n_ref_points

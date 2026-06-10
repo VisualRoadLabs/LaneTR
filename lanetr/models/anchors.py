@@ -69,23 +69,27 @@ class LaneAnchors(nn.Module):
         ry = torch.full_like(rx, y_ref)
         return torch.stack([rx, ry], dim=-1).clamp(0.0, 1.0)
 
-    def reference_points_multi(self, n_ref: int = 1) -> torch.Tensor:
-        """`n_ref` puntos de referencia A LO LARGO de la línea-prior de cada query, repartidos
-        desde su extremo superior (sy-length, arriba, donde dobla la curva) hasta el inferior
-        (sy, abajo). Así la query muestrea TODO el carril y "ve" la curva (estilo Sparse
-        Laneformer). -> (NQ, n_ref, 2) en [0,1].
-
-        Con n_ref=1 devuelve el único punto a media altura (y=0.5) = el modelo original (Paso 5.3).
-        """
-        sx, sy, k, length = (self.anchors[:, 0], self.anchors[:, 1],
-                             self.anchors[:, 2], self.anchors[:, 3])
+    def ref_heights(self, n_ref: int = 1, y_top: float = 0.15,
+                    y_bottom: float = 0.95) -> torch.Tensor:
+        """Alturas (y normalizada) DONDE se colocan los puntos de referencia, FIJAS en la imagen.
+        n_ref=1 -> [0.5] (media altura, = modelo original). n_ref>1 -> n_ref alturas equiespaciadas
+        en [y_top, y_bottom]; baja `y_bottom` para NO poner un punto en el borde de abajo del todo
+        (donde la mitad de las muestras se salen de la imagen)."""
         if n_ref == 1:
-            y = torch.full_like(sx, 0.5)[:, None]                       # (NQ, 1)
-        else:
-            y_top = (sy - length).clamp(0.0, 1.0)                       # extremo superior del prior
-            t = torch.linspace(0.0, 1.0, n_ref, device=self.anchors.device, dtype=self.anchors.dtype)
-            y = y_top[:, None] + t[None, :] * (sy - y_top)[:, None]     # (NQ, n_ref): arriba -> abajo
-        x = sx[:, None] + (y - sy[:, None]) * k[:, None]                # (NQ, n_ref)
+            return torch.tensor([0.5], device=self.anchors.device, dtype=self.anchors.dtype)
+        return torch.linspace(y_top, y_bottom, n_ref,
+                              device=self.anchors.device, dtype=self.anchors.dtype)
+
+    def reference_points_multi(self, n_ref: int = 1, y_top: float = 0.15,
+                               y_bottom: float = 0.95) -> torch.Tensor:
+        """`n_ref` puntos de referencia repartidos A LO LARGO del carril, a las alturas de
+        `ref_heights` (de arriba, donde dobla la curva, hacia abajo). x se lee de la línea-prior
+        recta del ancla. Así la query muestrea TODO el carril y "ve" la curva (estilo Sparse
+        Laneformer). -> (NQ, n_ref, 2) en [0,1]. Con n_ref=1 = único punto a y=0.5 (modelo orig.)."""
+        ys = self.ref_heights(n_ref, y_top, y_bottom)                   # (n_ref,)
+        sx, sy, k = self.anchors[:, 0:1], self.anchors[:, 1:2], self.anchors[:, 2:3]
+        x = sx + (ys[None, :] - sy) * k                                 # (NQ, n_ref)
+        y = ys[None, :].expand(x.shape[0], -1)                          # (NQ, n_ref)
         return torch.stack([x, y], dim=-1).clamp(0.0, 1.0)             # (NQ, n_ref, 2)
 
     def pos_embed(self) -> torch.Tensor:

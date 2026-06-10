@@ -13,7 +13,11 @@ model:
   use_anchors: true       # prior posicional (Paso 5.1)
   deformable: true        # atención deformable (Paso 5.3)
   n_points: 4             # puntos de muestreo por punto de referencia
-  n_ref_points: 6         # puntos de referencia A LO LARGO del carril (Paso 7); 1 = modelo orig.
+  n_ref_points: 1         # puntos de referencia A LO LARGO del carril (Paso 7); 1 = modelo orig.
+  ref_refine: false       # refinamiento iterativo de las refs hacia el carril predicho (Paso 7.2)
+  ref_refine_mode: mlp    # "mlp" (DAB-DETR) | "xs" (deriva del xs ya predicho por la cabeza)
+  ref_y_top: 0.15         # altura del punto de ref superior (n_ref>1)
+  ref_y_bottom: 0.95      # altura del inferior; bájalo (p.ej. 0.8) para NO poner ref en el borde de abajo
 
 data:
   img_w: 800
