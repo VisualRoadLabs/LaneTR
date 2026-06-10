@@ -16,6 +16,7 @@ DEFAULT: dict = {
         "backbone": "dla34", "pretrained": True, "d_model": 256,
         "num_queries": 12, "num_layers": 6, "num_rows": 144,
         "use_anchors": True, "deformable": True, "n_points": 4,
+        "n_ref_points": 6,   # puntos de referencia a lo largo del carril (Paso 7); 1 = modelo orig.
     },
     "data": {
         "img_w": 800, "img_h": 320, "num_rows": 144,

@@ -69,6 +69,25 @@ class LaneAnchors(nn.Module):
         ry = torch.full_like(rx, y_ref)
         return torch.stack([rx, ry], dim=-1).clamp(0.0, 1.0)
 
+    def reference_points_multi(self, n_ref: int = 1) -> torch.Tensor:
+        """`n_ref` puntos de referencia A LO LARGO de la línea-prior de cada query, repartidos
+        desde su extremo superior (sy-length, arriba, donde dobla la curva) hasta el inferior
+        (sy, abajo). Así la query muestrea TODO el carril y "ve" la curva (estilo Sparse
+        Laneformer). -> (NQ, n_ref, 2) en [0,1].
+
+        Con n_ref=1 devuelve el único punto a media altura (y=0.5) = el modelo original (Paso 5.3).
+        """
+        sx, sy, k, length = (self.anchors[:, 0], self.anchors[:, 1],
+                             self.anchors[:, 2], self.anchors[:, 3])
+        if n_ref == 1:
+            y = torch.full_like(sx, 0.5)[:, None]                       # (NQ, 1)
+        else:
+            y_top = (sy - length).clamp(0.0, 1.0)                       # extremo superior del prior
+            t = torch.linspace(0.0, 1.0, n_ref, device=self.anchors.device, dtype=self.anchors.dtype)
+            y = y_top[:, None] + t[None, :] * (sy - y_top)[:, None]     # (NQ, n_ref): arriba -> abajo
+        x = sx[:, None] + (y - sy[:, None]) * k[:, None]                # (NQ, n_ref)
+        return torch.stack([x, y], dim=-1).clamp(0.0, 1.0)             # (NQ, n_ref, 2)
+
     def pos_embed(self) -> torch.Tensor:
         """Codifica las anclas (sinusoidal + MLP) en embeddings posicionales. -> (NQ, d_model)."""
         ang = self.anchors[..., None] * self.freqs                          # (NQ, 4, F)

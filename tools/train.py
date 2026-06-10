@@ -50,7 +50,7 @@ def build_model(cfg, device):
                    num_queries=m["num_queries"], num_layers=m["num_layers"],
                    num_rows=m["num_rows"], img_h=cfg["data"]["img_h"],
                    use_anchors=m["use_anchors"], deformable=m["deformable"],
-                   n_points=m["n_points"])
+                   n_points=m["n_points"], n_ref_points=m.get("n_ref_points", 1))
     if cfg["train"]["freeze_bn"]:
         freeze_batchnorm(model.backbone)
     model = model.to(device)
@@ -220,6 +220,7 @@ def train(cfg, smoke=False):
                 "overrides": {"geo_metric": cfg["loss"].get("geo_metric"),
                               "num_queries": cfg["model"]["num_queries"],
                               "deformable": cfg["model"]["deformable"],
+                              "n_ref_points": cfg["model"].get("n_ref_points", 1),
                               "aux_one_to_many": cfg["loss"]["aux_one_to_many"],
                               "train_split": cfg["data"].get("train_split")},
             }

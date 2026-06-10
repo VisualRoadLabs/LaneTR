@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # (nombre, overrides sobre la config base). 'main' primero = tu modelo principal.
 ABLATIONS = [
-    ("main", {}),                                              # LaneIoU + 12q + anclas + deformable + filtrado
+    ("main", {}),                                              # LaneIoU + 12q + anclas + deformable(6 refs) + filtrado
+    ("nref1", {"model.n_ref_points": 1}),                      # *** ablation Paso 7: 1 punto de ref (modelo orig.) vs 6 a lo largo del carril
     ("geo_distance", {"loss.geo_metric": "distance"}),         # *** ablation clave: distancia simple vs LaneIoU
     ("geo_lineiou", {"loss.geo_metric": "lineiou"}),           # LineIoU (anchura constante, CLRNet)
     ("q4", {"model.num_queries": 4}),                          # 4 queries

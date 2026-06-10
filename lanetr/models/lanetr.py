@@ -26,20 +26,22 @@ class LaneTR(nn.Module):
     def __init__(self, backbone: str = "dla34", pretrained: bool = True, d_model: int = 256,
                  num_queries: int = 12, num_layers: int = 6, num_rows: int = 144,
                  nhead: int = 8, dim_ff: int = 1024, img_h: int = 320, use_anchors: bool = False,
-                 deformable: bool = False, n_points: int = 4):
+                 deformable: bool = False, n_points: int = 4, n_ref_points: int = 1):
         super().__init__()
         self.backbone = build_backbone(backbone, pretrained)
         self.fpn = FPN(self.backbone.out_channels, d_model)
         self.decoder = LaneDecoder(d_model=d_model, nhead=nhead, num_layers=num_layers,
                                    num_queries=num_queries, dim_ff=dim_ff,
                                    num_levels=len(self.backbone.out_channels),
-                                   deformable=deformable, n_points=n_points)
+                                   deformable=deformable, n_points=n_points,
+                                   n_ref_points=n_ref_points)
         self.head = LaneHead(d_model, num_rows, residual_xs=use_anchors)
         self.num_rows = num_rows
         self.num_queries = num_queries
         self.img_h = img_h
         self.use_anchors = use_anchors
         self.deformable = deformable
+        self.n_ref_points = n_ref_points
         if use_anchors:
             self.anchors = LaneAnchors(num_queries, d_model)
             self.register_buffer("row_ys", torch.tensor(make_row_ys(img_h, num_rows)))
@@ -47,7 +49,8 @@ class LaneTR(nn.Module):
     def forward(self, images: torch.Tensor, return_attn: bool = False):
         feats = self.fpn(self.backbone(images))
         if self.use_anchors:
-            ref = self.anchors.reference_points() if self.deformable else None  # (NQ,2)
+            # P puntos de referencia a lo largo del carril (Paso 7); P=1 -> centro (modelo orig.)
+            ref = self.anchors.reference_points_multi(self.n_ref_points) if self.deformable else None
             dec = self.decoder(feats, query_pos=self.anchors.pos_embed(),
                                reference_points=ref, need_attn=return_attn)
             prior = self.anchors.prior_xs(self.row_ys, self.img_h)             # (NQ,R)

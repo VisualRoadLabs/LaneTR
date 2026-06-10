@@ -12,7 +12,8 @@ model:
   num_rows: 144
   use_anchors: true       # prior posicional (Paso 5.1)
   deformable: true        # atención deformable (Paso 5.3)
-  n_points: 4
+  n_points: 4             # puntos de muestreo por punto de referencia
+  n_ref_points: 6         # puntos de referencia A LO LARGO del carril (Paso 7); 1 = modelo orig.
 
 data:
   img_w: 800
