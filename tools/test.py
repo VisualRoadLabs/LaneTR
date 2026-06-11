@@ -72,13 +72,18 @@ def main():
         conf = best
         print(f"Mejor umbral: {conf:.2f}")
 
-    res = ev.evaluate_list(model, args.list, device, conf_thresh=conf, **kw)
+    if args.categories:
+        # global + 9 categorías en una sola inferencia
+        res, cats = ev.evaluate_test_and_categories(model, device, conf_thresh=conf,
+                                                    test_list=args.list, **kw)
+    else:
+        res = ev.evaluate_list(model, args.list, device, conf_thresh=conf, **kw)
+        cats = None
     print(f"\n=== {args.list} | conf={conf:.2f} ===")
     print(f"F1={res['F1']:.4f}  P={res['Precision']:.4f}  R={res['Recall']:.4f}  "
           f"TP={res['TP']} FP={res['FP']} FN={res['FN']}")
 
-    if args.categories:
-        cats = ev.evaluate_categories(model, device, conf_thresh=conf, **kw)
+    if cats:
         print("\n=== F1 por categoría ===")
         for name, s in cats.items():
             if name == "cross":

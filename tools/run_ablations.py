@@ -88,7 +88,7 @@ def main():
                 p = subprocess.Popen(cmd, env=env, stdout=logf, stderr=subprocess.STDOUT)
                 running[gpu] = (name, p, logf)
                 print(f"[GPU {gpu}] lanzado '{name}'  -> work_dirs/_runner_{name}.out")
-        time.sleep(5)
+        time.sleep(3)   # poll frecuente -> la GPU coge el siguiente en cuanto se libera
         for gpu, (name, p, logf) in list(running.items()):
             if p.poll() is not None:
                 logf.close()

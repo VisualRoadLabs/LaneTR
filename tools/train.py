@@ -204,27 +204,30 @@ def train(cfg, smoke=False):
             viz.visualize(eval_model, criterion.matcher, epoch, work / "viz")
             log(f"visualizaciones -> viz/epoch_{epoch:03d}/")
 
-    # --- evaluación FINAL: calibra umbral en val + F1 test global y por categoría -> results.json ---
+    # --- evaluación FINAL: calibra umbral (subconjunto de val) + F1 test global y por categoría
+    # en UNA sola pasada de inferencia -> results.json. Protegida para no bloquear si falla. ---
     if work is not None and cfg["train"].get("final_eval", True):
-        log("evaluación final: calibrando umbral en val y evaluando test (global + categorías)...")
-        ekw = dict(batch_size=cfg["train"]["eval_batch_size"], num_workers=0,
-                   img_w=cfg["data"]["img_w"], img_h=cfg["data"]["img_h"], num_rows=cfg["data"]["num_rows"])
-        best_thr, _ = ev.calibrate_threshold(eval_model, "val_gt.txt", device, **ekw)
-        test_res = ev.evaluate_list(eval_model, "test.txt", device, conf_thresh=best_thr, **ekw)
-        cats = ev.evaluate_categories(eval_model, device, conf_thresh=best_thr, **ekw)
-        results = {
-            "name": cfg["name"], "best_f1_val": best_f1, "conf_thresh": best_thr,
-            "test_F1": test_res["F1"], "test_P": test_res["Precision"], "test_R": test_res["Recall"],
-            "categories": {k: (v["FP"] if k == "cross" else v["F1"]) for k, v in cats.items()},
-            "overrides": {"geo_metric": cfg["loss"].get("geo_metric"),
-                          "num_queries": cfg["model"]["num_queries"],
-                          "deformable": cfg["model"]["deformable"],
-                          "aux_one_to_many": cfg["loss"]["aux_one_to_many"],
-                          "train_split": cfg["data"].get("train_split")},
-        }
-        (work / "results.json").write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
-        (eval_log.info if eval_log else print)(
-            f"FINAL test F1={test_res['F1']:.4f} (umbral {best_thr:.2f}) -> results.json")
+        log("evaluación final: calibrando umbral en val (subconjunto) y test en 1 pasada...")
+        try:
+            ekw = dict(batch_size=cfg["train"]["eval_batch_size"], num_workers=0,
+                       img_w=cfg["data"]["img_w"], img_h=cfg["data"]["img_h"], num_rows=cfg["data"]["num_rows"])
+            best_thr, _ = ev.calibrate_threshold(eval_model, "val_gt.txt", device, max_images=3000, **ekw)
+            test_res, cats = ev.evaluate_test_and_categories(eval_model, device, conf_thresh=best_thr, **ekw)
+            results = {
+                "name": cfg["name"], "best_f1_val": best_f1, "conf_thresh": best_thr,
+                "test_F1": test_res["F1"], "test_P": test_res["Precision"], "test_R": test_res["Recall"],
+                "categories": {k: (v["FP"] if k == "cross" else v["F1"]) for k, v in cats.items()},
+                "overrides": {"geo_metric": cfg["loss"].get("geo_metric"),
+                              "num_queries": cfg["model"]["num_queries"],
+                              "deformable": cfg["model"]["deformable"],
+                              "aux_one_to_many": cfg["loss"]["aux_one_to_many"],
+                              "train_split": cfg["data"].get("train_split")},
+            }
+            (work / "results.json").write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
+            (eval_log.info if eval_log else print)(
+                f"FINAL test F1={test_res['F1']:.4f} (umbral {best_thr:.2f}) -> results.json")
+        except Exception as e:  # noqa: BLE001
+            log(f"[aviso] la evaluación final falló ({e}); el entrenamiento queda guardado igualmente")
 
     return {"iters": it, "last": last, "best_f1": best_f1,
             "work_dir": str(work) if work else None}
