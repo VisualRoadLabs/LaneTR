@@ -21,6 +21,16 @@ try:
 except Exception:
     pass
 
+# En Windows con red corporativa, usar el almacén de certificados del sistema para que
+# timm/HuggingFace pueda descargar los pesos preentrenados (best-effort).
+import os
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except Exception:
+    pass
+
 import cv2
 import numpy as np
 import torch
@@ -67,11 +77,12 @@ def main() -> int:
     print("=" * 70)
     font = _font(15)
 
-    backbone = build_backbone("resnet18", pretrained=True).eval()
+    backbone = build_backbone("dla34", pretrained=True).eval()
     fpn = FPN(backbone.out_channels, out_channels=256).eval()
     n_bb = sum(p.numel() for p in backbone.parameters())
     n_fpn = sum(p.numel() for p in fpn.parameters())
-    print(f"Backbone ResNet-18: {n_bb/1e6:.1f}M params  |  FPN(256): {n_fpn/1e6:.2f}M params")
+    print(f"Backbone DLA-34: {n_bb/1e6:.1f}M params (ch={backbone.out_channels})  |  "
+          f"FPN(256): {n_fpn/1e6:.2f}M params")
 
     ds = CULaneDataset("val", augment=False)
     rows = []
