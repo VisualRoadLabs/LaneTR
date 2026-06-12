@@ -152,7 +152,9 @@ def train(cfg, smoke=False):
                 losses = criterion(pred, targets)
             optimizer.zero_grad()
             losses["total"].backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+            # norma TOTAL del gradiente ANTES de recortar: si grad_norm >> clip (0.1), el clip
+            # está estrangulando los pasos (p.ej. los gradientes grandes de los frames curvos).
+            gnorm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), clip))
             optimizer.step()
             scheduler.step()
             if ema is not None:
@@ -165,7 +167,8 @@ def train(cfg, smoke=False):
                     gpu.sample()
                 lr = optimizer.param_groups[0]["lr"]
                 loss_str = "  ".join(f"loss_{k} {v:.4f}" for k, v in last.items())
-                log(f"ep {epoch+1}/{epochs} it {it}/{total_iters}  lr {lr:.6f}  {loss_str}  ETA {eta_str}")
+                log(f"ep {epoch+1}/{epochs} it {it}/{total_iters}  lr {lr:.6f}  {loss_str}  "
+                    f"grad_norm {gnorm:.3f}  ETA {eta_str}")
             if smoke and it >= 5:
                 print("  [smoke] 5 iteraciones OK")
                 # validar el hook de evaluación (con EMA) sobre 4 imágenes
