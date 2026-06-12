@@ -24,15 +24,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# refine_3pt = la mejor arquitectura para curvas (3 refs a lo largo del carril + refinamiento)
+_R3 = {"model.n_ref_points": 3, "model.ref_refine": "true",
+       "model.ref_y_top": 0.15, "model.ref_y_bottom": 0.9}
+
 # (nombre, overrides sobre la config base). 'main' primero = tu modelo principal.
 ABLATIONS = [
     ("main", {}),                                              # LaneIoU + 12q + anclas + deformable(1 ref estática) + filtrado
     # *** Paso 7 (curvas): refinamiento iterativo de las referencias hacia el carril predicho
     ("refine_main", {"model.ref_refine": "true"}),             # 1 punto + refinamiento (control; y fija a 0.5)
-    ("refine_3pt", {"model.n_ref_points": 3, "model.ref_refine": "true",
-                    "model.ref_y_top": 0.15, "model.ref_y_bottom": 0.9}),  # 3 puntos (sin borde inferior) + refinamiento (MLP, DAB-DETR)
-    ("refine_xs", {"model.n_ref_points": 3, "model.ref_refine": "true", "model.ref_refine_mode": "xs",
-                   "model.ref_y_top": 0.15, "model.ref_y_bottom": 0.9}),   # *** 3 puntos + refinamiento DERIVADO del xs de la cabeza
+    ("refine_3pt", dict(_R3)),                                 # 3 puntos (sin borde inferior) + refinamiento (MLP)
+    ("refine_xs", {**_R3, "model.ref_refine_mode": "xs"}),     # 3 puntos + refinamiento DERIVADO del xs de la cabeza
+    # *** Paso 7.3 (curvas): el cuello de botella es FRECUENCIA (curvas ~1-3% -> "colapso al carril
+    # medio"). Se ataca con énfasis en la pérdida + oversampling, SOBRE refine_3pt.
+    ("curve_w", {**_R3, "loss.curve_gamma": 4.0}),                          # pesa la geometría por curvatura GT
+    ("curve_os", {**_R3, "data.curve_oversample": "true"}),                 # oversampling de curvas (npz)
+    ("curve_all", {**_R3, "loss.curve_gamma": 4.0, "data.curve_oversample": "true"}),  # ambos (recomendado)
     ("geo_distance", {"loss.geo_metric": "distance"}),         # *** ablation clave: distancia simple vs LaneIoU
     ("geo_lineiou", {"loss.geo_metric": "lineiou"}),           # LineIoU (anchura constante, CLRNet)
     ("q4", {"model.num_queries": 4}),                          # 4 queries

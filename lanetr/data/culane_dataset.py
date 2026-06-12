@@ -86,10 +86,25 @@ def collate_lanes(batch):
     return out
 
 
-def build_dataloader(split="train", batch_size=8, shuffle=None, num_workers=0,
-                     seed=None, **ds_kwargs) -> DataLoader:
+def build_dataloader(split="train", batch_size=8, shuffle=None, num_workers=0, seed=None,
+                     curve_oversample=False, curve_alpha=4.0, curve_top_frac=0.1,
+                     **ds_kwargs) -> DataLoader:
     if shuffle is None:
         shuffle = (split == "train")
     ds = CULaneDataset(split, seed=seed, **ds_kwargs)
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers,
-                      collate_fn=collate_lanes)
+    sampler = None
+    if curve_oversample and split in ("train", "train_full"):
+        # SOBRE-MUESTREO de curvas (Paso 7.3): el top `curve_top_frac` más curvo pesa ×(1+alpha).
+        # Requiere list/train_curvature.npz (tools/compute_curvature.py), alineado a la lista.
+        npz = paths.list_dir() / "train_curvature.npz"
+        score = np.load(npz)["data"].astype(np.float64)
+        if len(score) != len(ds.entries):
+            raise ValueError(f"train_curvature.npz ({len(score)}) != dataset ({len(ds.entries)}); "
+                             "regenera con tools/compute_curvature.py para este split")
+        thr = np.quantile(score, 1.0 - curve_top_frac)
+        w = 1.0 + curve_alpha * (score >= thr)                 # recto ×1, curvo ×(1+alpha)
+        sampler = torch.utils.data.WeightedRandomSampler(torch.as_tensor(w, dtype=torch.double),
+                                                         num_samples=len(ds), replacement=True)
+        shuffle = False                                        # mutuamente excluyente con sampler
+    return DataLoader(ds, batch_size=batch_size, shuffle=(shuffle and sampler is None),
+                      num_workers=num_workers, sampler=sampler, collate_fn=collate_lanes)

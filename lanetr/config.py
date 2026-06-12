@@ -25,6 +25,8 @@ DEFAULT: dict = {
         "img_w": 800, "img_h": 320, "num_rows": 144,
         "batch_size": 32, "num_workers": 8, "augment": True,
         "train_split": "train",   # "train"=filtrado (coche parado); "train_full"=88.880 (ablation filtro)
+        # sobre-muestreo de curvas (Paso 7.3); requiere list/train_curvature.npz (compute_curvature.py)
+        "curve_oversample": False, "curve_alpha": 4.0, "curve_top_frac": 0.1,
     },
     "optim": {
         "lr": 2.0e-4, "weight_decay": 1.0e-4,
@@ -35,6 +37,10 @@ DEFAULT: dict = {
         "focal_alpha": 0.25, "focal_gamma": 2.0,
         "aux_one_to_many": False, "o2m_k": 4, "w_smooth": 0.0,
         "geo_metric": "laneiou",  # "laneiou" (tesis) | "lineiou" | "distance" (ablation)
+        # énfasis en curvas (Paso 7.3): pesa el término geométrico por la curvatura del GT
+        "curve_gamma": 0.0,       # 0 = sin énfasis (igual que antes); ~4 para enfatizar curvas
+        "curve_thresh": 0.005, "curve_scale": 0.03, "curve_cap": 2.0,  # recto≈0, curva ~0.03 (xs norm.)
+        "w_curv": 0.0,            # término directo que iguala la 2ª diferencia (curvatura) pred vs GT
     },
     "ema": {"enabled": True, "decay": 0.9999, "tau": 2000.0},
     "train": {

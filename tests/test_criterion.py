@@ -101,6 +101,32 @@ def test_smoothness_term_optional():
     assert "smooth" in out and torch.isfinite(out["smooth"]).all()
 
 
+def test_curve_emphasis():
+    """_lane_curvature distingue recto (~0) de curvo; curve_gamma sube el término geométrico del
+    carril curvo (recto sin tocar); w_curv añade un término de curvatura finito (Paso 7.3)."""
+    ys = torch.linspace(0, 1, R)
+    straight = torch.full((R,), 0.30)
+    curved = 0.60 + 0.10 * (ys - 0.5) ** 2                       # parábola (curva)
+    gxs = torch.stack([straight, curved])
+    gv = torch.ones(2, R, dtype=torch.bool)
+    curv = LaneCriterion._lane_curvature(gxs, gv)
+    assert curv[0] < 1e-4 and curv[1] > 0.005, curv.tolist()    # recto≈0, curva por encima del umbral
+
+    t = [{"xs": gxs, "valid": gv, "start_y": torch.ones(2),
+          "length": torch.ones(2), "theta": torch.zeros(2)}]
+    xs = torch.full((1, 1, NQ, R), 0.30)
+    conf = torch.full((1, 1, NQ), -4.0)
+    xs[:, 0, 0] = straight; conf[:, 0, 0] = 4.0                  # q0 -> recto (bien)
+    xs[:, 0, 1] = 0.60; conf[:, 0, 1] = 4.0                      # q1 -> el curvo, pero predicho RECTO
+    pred = {"conf": conf, "xs": xs, "start_y": torch.ones(1, 1, NQ),
+            "length": torch.ones(1, 1, NQ), "theta": torch.zeros(1, 1, NQ)}
+    base = LaneCriterion(curve_gamma=0.0)(pred, t)["iou"].item()
+    emph = LaneCriterion(curve_gamma=4.0)(pred, t)["iou"].item()
+    assert emph > base * 1.15, (base, emph)                     # el peso por curvatura sube el geo
+    out = LaneCriterion(curve_gamma=4.0, w_curv=0.3)(pred, t)
+    assert "curv" in out and torch.isfinite(out["curv"]).all()
+
+
 def _run_all() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
