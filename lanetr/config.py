@@ -16,6 +16,10 @@ DEFAULT: dict = {
         "backbone": "dla34", "pretrained": True, "d_model": 256,
         "num_queries": 12, "num_layers": 6, "num_rows": 144,
         "use_anchors": True, "deformable": True, "n_points": 4,
+        "n_ref_points": 1,        # puntos de referencia a lo largo del carril (Paso 7); 1 = modelo orig.
+        "ref_refine": False,      # refinamiento iterativo de las refs hacia el carril predicho (Paso 7.2)
+        "ref_refine_mode": "mlp", # "mlp" (DAB-DETR) | "xs" (deriva del xs ya predicho por la cabeza)
+        "ref_y_top": 0.15, "ref_y_bottom": 0.95,  # alturas de las refs (n_ref>1); baja y_bottom = sin borde inferior
     },
     "data": {
         "img_w": 800, "img_h": 320, "num_rows": 144,

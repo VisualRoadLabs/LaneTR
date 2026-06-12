@@ -69,6 +69,29 @@ class LaneAnchors(nn.Module):
         ry = torch.full_like(rx, y_ref)
         return torch.stack([rx, ry], dim=-1).clamp(0.0, 1.0)
 
+    def ref_heights(self, n_ref: int = 1, y_top: float = 0.15,
+                    y_bottom: float = 0.95) -> torch.Tensor:
+        """Alturas (y normalizada) DONDE se colocan los puntos de referencia, FIJAS en la imagen.
+        n_ref=1 -> [0.5] (media altura, = modelo original). n_ref>1 -> n_ref alturas equiespaciadas
+        en [y_top, y_bottom]; baja `y_bottom` para NO poner un punto en el borde de abajo del todo
+        (donde la mitad de las muestras se salen de la imagen)."""
+        if n_ref == 1:
+            return torch.tensor([0.5], device=self.anchors.device, dtype=self.anchors.dtype)
+        return torch.linspace(y_top, y_bottom, n_ref,
+                              device=self.anchors.device, dtype=self.anchors.dtype)
+
+    def reference_points_multi(self, n_ref: int = 1, y_top: float = 0.15,
+                               y_bottom: float = 0.95) -> torch.Tensor:
+        """`n_ref` puntos de referencia repartidos A LO LARGO del carril, a las alturas de
+        `ref_heights` (de arriba, donde dobla la curva, hacia abajo). x se lee de la línea-prior
+        recta del ancla. Así la query muestrea TODO el carril y "ve" la curva (estilo Sparse
+        Laneformer). -> (NQ, n_ref, 2) en [0,1]. Con n_ref=1 = único punto a y=0.5 (modelo orig.)."""
+        ys = self.ref_heights(n_ref, y_top, y_bottom)                   # (n_ref,)
+        sx, sy, k = self.anchors[:, 0:1], self.anchors[:, 1:2], self.anchors[:, 2:3]
+        x = sx + (ys[None, :] - sy) * k                                 # (NQ, n_ref)
+        y = ys[None, :].expand(x.shape[0], -1)                          # (NQ, n_ref)
+        return torch.stack([x, y], dim=-1).clamp(0.0, 1.0)             # (NQ, n_ref, 2)
+
     def pos_embed(self) -> torch.Tensor:
         """Codifica las anclas (sinusoidal + MLP) en embeddings posicionales. -> (NQ, d_model)."""
         ang = self.anchors[..., None] * self.freqs                          # (NQ, 4, F)

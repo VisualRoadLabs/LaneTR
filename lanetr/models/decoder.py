@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 
 from .deform_attn import MSDeformAttn
+from .head import MLP, _inverse_sigmoid
 from .positional import PositionEmbeddingSine
 
 
@@ -60,10 +61,10 @@ class DeformableDecoderLayer(nn.Module):
     """Capa de decoder con cross-attention DEFORMABLE (self-attn densa entre queries)."""
 
     def __init__(self, d_model: int = 256, nhead: int = 8, dim_ff: int = 1024,
-                 dropout: float = 0.1, n_levels: int = 3, n_points: int = 4):
+                 dropout: float = 0.1, n_levels: int = 3, n_points: int = 4, n_ref_points: int = 1):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
-        self.cross_attn = MSDeformAttn(d_model, n_levels, nhead, n_points)
+        self.cross_attn = MSDeformAttn(d_model, n_levels, nhead, n_points, n_ref_points)
         self.linear1 = nn.Linear(d_model, dim_ff)
         self.linear2 = nn.Linear(dim_ff, d_model)
         self.norm1 = nn.LayerNorm(d_model)
@@ -97,20 +98,31 @@ class DeformableDecoderLayer(nn.Module):
 class LaneDecoder(nn.Module):
     def __init__(self, d_model: int = 256, nhead: int = 8, num_layers: int = 6,
                  num_queries: int = 12, dim_ff: int = 1024, dropout: float = 0.1,
-                 num_levels: int = 3, deformable: bool = False, n_points: int = 4):
+                 num_levels: int = 3, deformable: bool = False, n_points: int = 4,
+                 n_ref_points: int = 1, ref_refine: bool = False, ref_refine_mode: str = "mlp"):
         super().__init__()
         self.d_model = d_model
         self.num_queries = num_queries
         self.num_layers = num_layers
         self.num_levels = num_levels
         self.deformable = deformable
+        self.n_ref_points = n_ref_points
+        self.ref_refine = ref_refine
+        self.ref_refine_mode = ref_refine_mode      # "mlp" (DAB-DETR) | "xs" (deriva del xs de la cabeza)
         self.query_embed = nn.Embedding(num_queries, d_model)     # pos. de las queries
         self.level_embed = nn.Parameter(torch.zeros(num_levels, d_model))
         self.pos_enc = PositionEmbeddingSine(d_model // 2)
         if deformable:
             self.layers = nn.ModuleList(
-                [DeformableDecoderLayer(d_model, nhead, dim_ff, dropout, num_levels, n_points)
+                [DeformableDecoderLayer(d_model, nhead, dim_ff, dropout, num_levels, n_points, n_ref_points)
                  for _ in range(num_layers)])
+            if ref_refine and ref_refine_mode == "mlp":
+                # refinamiento iterativo (estilo DAB-DETR): tras cada capa, mueve la x de los
+                # puntos de referencia hacia el carril que la query va prediciendo. Init a 0 ->
+                # delta=0 -> las referencias arrancan en la recta del ancla (igual que sin refinar).
+                self.ref_refine_mlp = MLP(d_model, d_model, n_ref_points)
+                nn.init.zeros_(self.ref_refine_mlp.layers[-1].weight)
+                nn.init.zeros_(self.ref_refine_mlp.layers[-1].bias)
         else:
             self.layers = nn.ModuleList(
                 [TransformerDecoderLayer(d_model, nhead, dim_ff, dropout) for _ in range(num_layers)])
@@ -129,7 +141,8 @@ class LaneDecoder(nn.Module):
             poss.append(pos)
         return torch.cat(srcs, dim=1), torch.cat(poss, dim=1), shapes
 
-    def forward(self, feats, need_attn: bool = False, query_pos=None, reference_points=None):
+    def forward(self, feats, need_attn: bool = False, query_pos=None, reference_points=None,
+                ref_ys=None, ref_predict=None):
         b = feats[0].shape[0]
         memory, memory_pos, shapes = self._build_memory(feats)
         if query_pos is None:
@@ -139,18 +152,38 @@ class LaneDecoder(nn.Module):
         tgt = torch.zeros_like(query_pos)
 
         if self.deformable:
+            Rf = self.n_ref_points
             if reference_points is None:                          # por defecto: centro
-                reference_points = torch.full((b, self.num_queries, 2), 0.5, device=memory.device)
-            if reference_points.dim() == 2:                       # (NQ,2) -> (b,NQ,2)
-                reference_points = reference_points.unsqueeze(0).expand(b, -1, -1)
-            ref = reference_points[:, :, None, :].expand(-1, -1, self.num_levels, -1)  # (b,NQ,L,2)
+                reference_points = torch.full((self.num_queries, Rf, 2), 0.5, device=memory.device)
+            if reference_points.dim() == 2:                       # (NQ,2) -> (NQ,1,2)
+                reference_points = reference_points.unsqueeze(1)
+            if reference_points.dim() == 3:                       # (NQ,n_ref,2) -> (b,NQ,n_ref,2)
+                reference_points = reference_points.unsqueeze(0).expand(b, -1, -1, -1)
+            cur = reference_points                                # (b,NQ,n_ref,2): refs de la capa actual
+            if ref_ys is not None:
+                ref_ys = ref_ys.to(memory.device)
             outs, samps = [], []
-            for layer in self.layers:
+            for li, layer in enumerate(self.layers):
+                # (b,NQ,n_ref,2) -> (b,NQ,n_levels,n_ref,2): mismas refs (normalizadas) por nivel
+                ref = cur[:, :, None, :, :].expand(-1, -1, self.num_levels, -1, -1)
                 res = layer(tgt, query_pos, ref, memory, shapes, return_sampling=need_attn)
                 tgt = res[0] if need_attn else res
-                outs.append(self.norm(tgt))
+                hs_l = self.norm(tgt)
+                outs.append(hs_l)
                 if need_attn:
                     samps.append((res[1], res[2]))               # (sampling_locations, attn)
+                # refinamiento iterativo: mueve la x de las refs hacia el carril predicho
+                if self.ref_refine and li < self.num_layers - 1:
+                    if self.ref_refine_mode == "xs" and ref_predict is not None:
+                        # deriva la x de las refs del xs que la cabeza YA predice (gather + detach):
+                        # señal supervisada directamente, sin módulo extra que pueda derivar
+                        new_x = ref_predict(hs_l).detach().clamp(1e-4, 1 - 1e-4)  # (b,NQ,n_ref)
+                    else:                                                         # MLP (DAB-DETR)
+                        dx = self.ref_refine_mlp(hs_l)                            # (b,NQ,n_ref)
+                        new_x = torch.sigmoid(_inverse_sigmoid(cur[..., 0].detach()) + dx)
+                    new_y = (ref_ys.view(1, 1, Rf).expand_as(new_x)
+                             if ref_ys is not None else cur[..., 1].detach())
+                    cur = torch.stack([new_x, new_y], dim=-1)    # refs para la capa siguiente
             hs = torch.stack(outs, dim=0)
             return (hs, samps, shapes) if need_attn else hs
 
