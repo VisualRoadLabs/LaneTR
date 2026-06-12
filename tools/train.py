@@ -68,7 +68,10 @@ def build_criterion(cfg):
                          w_smooth=l["w_smooth"], focal_alpha=l["focal_alpha"],
                          focal_gamma=l["focal_gamma"], aux_one_to_many=l["aux_one_to_many"],
                          o2m_k=l["o2m_k"], img_h=cfg["data"]["img_h"],
-                         geo_metric=l.get("geo_metric", "laneiou"))
+                         geo_metric=l.get("geo_metric", "laneiou"),
+                         curve_gamma=l.get("curve_gamma", 0.0), curve_thresh=l.get("curve_thresh", 0.005),
+                         curve_scale=l.get("curve_scale", 0.03), curve_cap=l.get("curve_cap", 2.0),
+                         w_curv=l.get("w_curv", 0.0))
 
 
 def train(cfg, smoke=False):
@@ -84,7 +87,10 @@ def train(cfg, smoke=False):
                           num_workers=workers,
                           seed=cfg["train"]["seed"], encode_targets=True,
                           num_rows=cfg["data"]["num_rows"], img_w=cfg["data"]["img_w"],
-                          img_h=cfg["data"]["img_h"], augment=cfg["data"]["augment"])
+                          img_h=cfg["data"]["img_h"], augment=cfg["data"]["augment"],
+                          curve_oversample=cfg["data"].get("curve_oversample", False),
+                          curve_alpha=cfg["data"].get("curve_alpha", 4.0),
+                          curve_top_frac=cfg["data"].get("curve_top_frac", 0.1))
 
     model = build_model(cfg, device)
     model.train()
@@ -146,7 +152,9 @@ def train(cfg, smoke=False):
                 losses = criterion(pred, targets)
             optimizer.zero_grad()
             losses["total"].backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+            # norma TOTAL del gradiente ANTES de recortar: si grad_norm >> clip (0.1), el clip
+            # está estrangulando los pasos (p.ej. los gradientes grandes de los frames curvos).
+            gnorm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), clip))
             optimizer.step()
             scheduler.step()
             if ema is not None:
@@ -159,7 +167,8 @@ def train(cfg, smoke=False):
                     gpu.sample()
                 lr = optimizer.param_groups[0]["lr"]
                 loss_str = "  ".join(f"loss_{k} {v:.4f}" for k, v in last.items())
-                log(f"ep {epoch+1}/{epochs} it {it}/{total_iters}  lr {lr:.6f}  {loss_str}  ETA {eta_str}")
+                log(f"ep {epoch+1}/{epochs} it {it}/{total_iters}  lr {lr:.6f}  {loss_str}  "
+                    f"grad_norm {gnorm:.3f}  ETA {eta_str}")
             if smoke and it >= 5:
                 print("  [smoke] 5 iteraciones OK")
                 # validar el hook de evaluación (con EMA) sobre 4 imágenes

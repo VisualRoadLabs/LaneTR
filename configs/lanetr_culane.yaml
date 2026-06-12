@@ -26,6 +26,9 @@ data:
   batch_size: 32          # A6000 48GB; bajar a 24 si hiciera falta
   num_workers: 8
   augment: true
+  curve_oversample: false # Paso 7.3: sobre-muestrear curvas (requiere list/train_curvature.npz)
+  curve_alpha: 4.0        # el top curve_top_frac más curvo pesa ×(1+alpha)
+  curve_top_frac: 0.1
 
 optim:
   lr: 2.0e-4              # transformer/cabezas
@@ -44,6 +47,12 @@ loss:
   aux_one_to_many: false  # ablation (Paso 5.2)
   o2m_k: 4
   w_smooth: 0.0
+  # énfasis en curvas (Paso 7.3): pesa el término geométrico por la curvatura del GT
+  curve_gamma: 0.0        # 0 = sin énfasis; ~4 para enfatizar curvas (recto ×1)
+  curve_thresh: 0.005
+  curve_scale: 0.03
+  curve_cap: 2.0
+  w_curv: 0.0             # término directo que iguala la 2ª diferencia (curvatura) pred vs GT
 
 ema:
   enabled: true
