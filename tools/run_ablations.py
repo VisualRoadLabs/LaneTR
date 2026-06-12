@@ -40,6 +40,8 @@ ABLATIONS = [
     ("curve_w", {**_R3, "loss.curve_gamma": 4.0}),                          # pesa la geometría por curvatura GT
     ("curve_os", {**_R3, "data.curve_oversample": "true"}),                 # oversampling de curvas (npz)
     ("curve_all", {**_R3, "loss.curve_gamma": 4.0, "data.curve_oversample": "true"}),  # ambos (recomendado)
+    ("curve_clip", {**_R3, "loss.curve_gamma": 4.0, "data.curve_oversample": "true",
+                    "train.grad_clip": 0.5}),  # plan B: aflojar el grad-clip (0.1->0.5) para que pase el gradiente de las curvas
     ("geo_distance", {"loss.geo_metric": "distance"}),         # *** ablation clave: distancia simple vs LaneIoU
     ("geo_lineiou", {"loss.geo_metric": "lineiou"}),           # LineIoU (anchura constante, CLRNet)
     ("q4", {"model.num_queries": 4}),                          # 4 queries
