@@ -54,7 +54,8 @@ class LaneCriterion(nn.Module):
                  w_xy=0.2, w_ext=0.5, w_theta=0.0, w_smooth=0.0,
                  lane_width=LANE_WIDTH, img_w=IMG_W, img_h=IMG_H, aux_layers=True,
                  focal_alpha=0.25, focal_gamma=2.0, aux_one_to_many=False, o2m_k=4,
-                 geo_metric="laneiou"):
+                 geo_metric="laneiou", curve_gamma=0.0, curve_thresh=0.005, curve_scale=0.03,
+                 curve_cap=2.0, w_curv=0.0):
         super().__init__()
         # término geométrico: "laneiou" (tesis), "lineiou" (ablation), "distance" (L1 simple)
         self.geo_metric = geo_metric
@@ -69,6 +70,28 @@ class LaneCriterion(nn.Module):
         # asignación auxiliar uno-a-muchos en capas tempranas (one-to-one en la última)
         self.aux_one_to_many = aux_one_to_many
         self.o2m_k = o2m_k
+        # ÉNFASIS EN CURVAS (Paso 7.3): las curvas son ~1-3% de CULane y su gradiente (fuerte y
+        # bien dirigido) se promedia con muchos carriles rectos -> "colapso al carril medio".
+        #  - curve_gamma>0: pesa el término geométrico de CADA carril por su curvatura GT (recto=×1).
+        #  - w_curv>0: término directo que iguala la 2ª diferencia (curvatura) de pred y GT.
+        self.curve_gamma, self.curve_thresh = curve_gamma, curve_thresh
+        self.curve_scale, self.curve_cap, self.w_curv = curve_scale, curve_cap, w_curv
+
+    @staticmethod
+    def _lane_curvature(gxs, gv):
+        """Curvatura por carril = desviación máx (en unidades de xs normalizada) respecto a la
+        cuerda (recta entre el primer y el último punto válido). Recto≈0, curva ~0.03. -> (N,)."""
+        N, R = gxs.shape
+        rows = torch.arange(R, device=gxs.device, dtype=gxs.dtype)
+        first = torch.argmax(gv.float(), dim=1)                          # 1er índice válido (N,)
+        last = R - 1 - torch.argmax(gv.flip(1).float(), dim=1)           # último válido (N,)
+        xf = gxs.gather(1, first[:, None]).squeeze(1)
+        xl = gxs.gather(1, last[:, None]).squeeze(1)
+        denom = (last - first).clamp(min=1).to(gxs.dtype)
+        chord = (xf[:, None] + (xl - xf)[:, None]
+                 * (rows[None, :] - first[:, None].to(gxs.dtype)) / denom[:, None])
+        dev = (gxs - chord).abs().masked_fill(~gv, 0.0)
+        return dev.max(dim=1).values                                     # (N,) desviación normalizada
 
     def _layer_loss(self, pred_l, targets, matches) -> dict:
         B, NQ = pred_l["conf"].shape
@@ -76,7 +99,7 @@ class LaneCriterion(nn.Module):
 
         labels = torch.zeros(B, NQ, device=device)
         z = torch.zeros((), device=device)
-        iou_l, xy_l, ext_l, th_l, sm_l = z, z, z, z, z
+        iou_l, xy_l, ext_l, th_l, sm_l, cv_l = z, z, z, z, z, z
         num = 0
         for b, (q, g) in enumerate(matches):
             if len(q) == 0:
@@ -86,15 +109,29 @@ class LaneCriterion(nn.Module):
             pxs, gxs = pred_l["xs"][b][q], targets[b]["xs"][g]
             gv = targets[b]["valid"][g]
             d = (pxs - gxs).abs().masked_fill(~gv, 0.0)
-            l1_per_lane = (d.sum(-1) / gv.sum(-1).clamp(min=1)).sum()
-            xy_l = xy_l + l1_per_lane
+            l1_pl = d.sum(-1) / gv.sum(-1).clamp(min=1)               # L1 por carril (nb,)
+            xy_l = xy_l + l1_pl.sum()
+            # geometría POR CARRIL (sin reducir) para poder pesarla por curvatura
             if self.geo_metric == "laneiou":
-                iou_l = iou_l + lane_iou_loss(pxs, gxs, gv, self.lane_width, self.img_w,
-                                              self.img_h, reduction="sum")
+                geo_pl = lane_iou_loss(pxs, gxs, gv, self.lane_width, self.img_w,
+                                       self.img_h, reduction="none")
             elif self.geo_metric == "lineiou":
-                iou_l = iou_l + line_iou_loss(pxs, gxs, gv, reduction="sum")
+                geo_pl = line_iou_loss(pxs, gxs, gv, reduction="none")
             else:  # "distance": el término geométrico es la distancia L1 (ablation)
-                iou_l = iou_l + l1_per_lane
+                geo_pl = l1_pl
+            if self.curve_gamma > 0:                                  # peso por curvatura del GT
+                curv = self._lane_curvature(gxs, gv)                  # (nb,) recto≈0, curva ~0.03
+                w_lane = 1.0 + self.curve_gamma * (
+                    (curv - self.curve_thresh) / self.curve_scale).clamp(0.0, self.curve_cap)
+            else:
+                w_lane = 1.0
+            iou_l = iou_l + (w_lane * geo_pl).sum()
+            if self.w_curv > 0:                                       # iguala la curvatura (2ª dif.)
+                x2p = pxs[:, 2:] - 2 * pxs[:, 1:-1] + pxs[:, :-2]
+                x2g = gxs[:, 2:] - 2 * gxs[:, 1:-1] + gxs[:, :-2]
+                gv2 = gv[:, 2:] & gv[:, 1:-1] & gv[:, :-2]
+                cu = ((x2p - x2g).abs() * gv2).sum(-1) / gv2.sum(-1).clamp(min=1)   # (nb,)
+                cv_l = cv_l + cu.sum()
             ext_l = ext_l + (pred_l["start_y"][b][q] - targets[b]["start_y"][g]).abs().sum()
             ext_l = ext_l + (pred_l["length"][b][q] - targets[b]["length"][g]).abs().sum()
             th_l = th_l + (pred_l["theta"][b][q] - targets[b]["theta"][g]).abs().sum()
@@ -115,6 +152,8 @@ class LaneCriterion(nn.Module):
             out["theta"] = self.w_theta * th_l / n
         if self.w_smooth > 0:
             out["smooth"] = self.w_smooth * sm_l / n
+        if self.w_curv > 0:
+            out["curv"] = self.w_curv * cv_l / n
         return out
 
     def _match_layer(self, pred_l, targets, one_to_many: bool):
