@@ -15,8 +15,11 @@ import torch.nn as nn
 
 
 def _is_slow(name: str) -> bool:
-    """Parámetros de la atención deformable / prior posicional que conviene mover despacio."""
-    return ("sampling_offsets" in name) or name.endswith("anchors.anchors")
+    """Parámetros que dirigen DÓNDE muestrea la atención (deformable + prior posicional +
+    refinamiento de referencias) y que conviene mover despacio (0.1×) para no desestabilizar
+    el matching húngaro temprano."""
+    return (("sampling_offsets" in name) or ("ref_refine_mlp" in name)
+            or name.endswith("anchors.anchors"))
 
 
 def param_groups(model: nn.Module, lr: float, backbone_mult: float = 0.1,
